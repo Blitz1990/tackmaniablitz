@@ -7,7 +7,7 @@ export default function LandingPage() {
 
   return (
     <main
-      onClick={() => router.push('/hub-elite-esports-clean')}
+      onClick={() => router.push('/hub-elite-esports')}
       style={{
         width: '100vw',
         height: '100vh',
@@ -17,7 +17,7 @@ export default function LandingPage() {
       }}
     >
       <img
-        src="/zosch-banner-full.svg"
+        src="/zosch-banner.svg"
         alt="Zosch Racing"
         style={{
           width: '100%',
