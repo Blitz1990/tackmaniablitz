@@ -17,7 +17,7 @@ export default function LandingPage() {
       }}
     >
       <img
-        src="/zosch-banner.svg"
+        src="/3d9d279a-1acc-4f73-bf80-6ead3019e17f.jpeg"
         alt="Zosch Racing"
         style={{
           width: '100%',
