@@ -6,6 +6,7 @@ const SHEET_ID = '1usH7uwODTUGOq4EsI3QKJ5L4Hjcf7M90tzemwZk5JWc';
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit?usp=sharing`;
 const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Stammdaten_Pro`;
 const WRITE_URL = '/api/write';
+const LOCAL_TRACKS_KEY = 'trackmania-custom-tracks-v1';
 
 const AVATARS: Record<string, string> = {
   Marc: '',
@@ -43,6 +44,7 @@ type TrackOption = {
   category: string;
   map: string;
   track: string;
+  source?: string;
 };
 
 type SubmitState = {
@@ -50,6 +52,12 @@ type SubmitState = {
   category: string;
   map: string;
   time: string;
+  note: string;
+};
+
+type NewTrackState = {
+  category: string;
+  map: string;
   note: string;
 };
 
@@ -166,6 +174,41 @@ function buildKey(category: string, map: string, player: string) {
   return `${category.trim()}|${map.trim()}|${player.trim()}`;
 }
 
+function trackExists(trackOptions: TrackOption[], category: string, map: string) {
+  return trackOptions.some(
+    (track) =>
+      track.category.trim().toLowerCase() === category.trim().toLowerCase() &&
+      track.map.trim().toLowerCase() === map.trim().toLowerCase()
+  );
+}
+
+function loadLocalTracks(): TrackOption[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TRACKS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((item) => item && typeof item.category === 'string' && typeof item.map === 'string')
+      .map((item) => ({
+        category: item.category.trim(),
+        map: item.map.trim(),
+        track: buildTrack(item.category, item.map),
+        source: 'Local',
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalTracks(tracks: TrackOption[]) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(LOCAL_TRACKS_KEY, JSON.stringify(tracks));
+}
+
 function Avatar({ name }: { name: string }) {
   const url = AVATARS[name];
   if (url) return <img src={url} alt={name} className="avatar" />;
@@ -218,12 +261,20 @@ export default function Page() {
   const [trackSearch, setTrackSearch] = useState('');
   const [playerFilter, setPlayerFilter] = useState('');
   const [status, setStatus] = useState('');
+  const [trackStatus, setTrackStatus] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreatingTrack, setIsCreatingTrack] = useState(false);
+  const [localTracks, setLocalTracks] = useState<TrackOption[]>([]);
   const [newTime, setNewTime] = useState<SubmitState>({
     player: '',
     category: '',
     map: '',
     time: '',
+    note: '',
+  });
+  const [newTrack, setNewTrack] = useState<NewTrackState>({
+    category: '',
+    map: '',
     note: '',
   });
 
@@ -243,6 +294,7 @@ export default function Page() {
   };
 
   useEffect(() => {
+    setLocalTracks(loadLocalTracks());
     loadRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -252,15 +304,26 @@ export default function Page() {
     [runs]
   );
 
-  const trackOptions = useMemo<TrackOption[]>(
-    () =>
-      Array.from(
-        new Map(
-          runs.map((r) => [buildTrack(r.category, r.map), { category: r.category, map: r.map, track: buildTrack(r.category, r.map) }])
-        ).values()
-      ).sort((a, b) => a.track.localeCompare(b.track)),
-    [runs]
-  );
+  const trackOptions = useMemo<TrackOption[]>(() => {
+    const combined = new Map<string, TrackOption>();
+
+    runs.forEach((r) => {
+      combined.set(buildTrack(r.category, r.map), {
+        category: r.category,
+        map: r.map,
+        track: buildTrack(r.category, r.map),
+        source: r.source || 'Sheet',
+      });
+    });
+
+    localTracks.forEach((track) => {
+      if (!combined.has(track.track)) {
+        combined.set(track.track, track);
+      }
+    });
+
+    return Array.from(combined.values()).sort((a, b) => a.track.localeCompare(b.track));
+  }, [runs, localTracks]);
 
   const categories = useMemo(
     () => Array.from(new Set(trackOptions.map((t) => t.category))).sort((a, b) => a.localeCompare(b)),
@@ -419,11 +482,6 @@ export default function Page() {
     [recordsByTrack, trackSearch, playerFilter]
   );
 
-  const topMovers = useMemo(
-    () => [...ranking].sort((a, b) => b.eloDelta - a.eloDelta).slice(0, 6),
-    [ranking]
-  );
-
   const recentRuns = useMemo(
     () => [...runs].sort((a, b) => b.id.localeCompare(a.id)).slice(0, 12),
     [runs]
@@ -475,73 +533,190 @@ export default function Page() {
     }
   };
 
+  const submitTrack = async () => {
+    try {
+      if (!newTrack.category || !newTrack.map) {
+        setTrackStatus('Bitte Kategorie und Map für die neue Strecke ausfüllen.');
+        return;
+      }
+
+      if (trackExists(trackOptions, newTrack.category, newTrack.map)) {
+        setTrackStatus('Diese Strecke existiert bereits.');
+        return;
+      }
+
+      setIsCreatingTrack(true);
+      setTrackStatus('Lege neue Strecke an…');
+
+      const createdTrack: TrackOption = {
+        category: newTrack.category.trim(),
+        map: newTrack.map.trim(),
+        track: buildTrack(newTrack.category, newTrack.map),
+        source: 'Local',
+      };
+
+      const nextLocalTracks = [...localTracks, createdTrack];
+      setLocalTracks(nextLocalTracks);
+      saveLocalTracks(nextLocalTracks);
+
+      setNewTime((v) => ({
+        ...v,
+        category: createdTrack.category,
+        map: createdTrack.map,
+      }));
+
+      let remoteSaved = false;
+
+      try {
+        const payload = {
+          category: createdTrack.category,
+          map: createdTrack.map,
+          track: createdTrack.track,
+          source: 'WebApp',
+          note: newTrack.note.trim(),
+        };
+
+        const res = await fetch(WRITE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'track', payload }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        remoteSaved = res.ok && data?.ok !== false;
+      } catch {
+        remoteSaved = false;
+      }
+
+      setTrackStatus(
+        remoteSaved
+          ? 'Neue Strecke angelegt und an den Server gesendet.'
+          : 'Neue Strecke lokal angelegt. Falls sie bei anderen nicht erscheint, muss das Apps Script noch track-Einträge verarbeiten.'
+      );
+
+      setNewTrack({ category: '', map: '', note: '' });
+      setTimeout(() => loadRuns(), 900);
+    } catch (error) {
+      setTrackStatus(error instanceof Error ? error.message : 'Strecke anlegen fehlgeschlagen.');
+    } finally {
+      setIsCreatingTrack(false);
+    }
+  };
+
   return (
     <main className="shell">
-      <section className="hero">
+      <section className="hero heroSingle">
         <div>
           <div className="eyebrow">TRACKMANIA ELITE E-SPORTS</div>
-          <h1>Neue Zeiten sauber eintragen</h1>
+          <h1>Neue Zeiten und Strecken direkt auf der Seite</h1>
           <p className="sub">
-            Die Seite liest aus <strong>Stammdaten_Pro</strong> und schreibt neue Einträge jetzt
-            strukturiert mit <strong>Kategorie + Map + Spieler + Zeit</strong> zurück.
+            Du kannst jetzt neue Zeiten speichern und neue Strecken anlegen. Neue Strecken sind sofort auswählbar; zusätzlich wird versucht, sie an den bestehenden Schreib-Endpoint zu senden.
           </p>
 
-          <div className="actions">
-            <select
-              value={newTime.category}
-              onChange={(e) => {
-                const nextCategory = e.target.value;
-                setNewTime((v) => ({ ...v, category: nextCategory, map: '' }));
-              }}
-            >
-              <option value="">Kategorie wählen</option>
-              {categories.map((category) => (
-                <option key={category} value={category}>
-                  {category}
-                </option>
-              ))}
-            </select>
+          <div className="dualForms">
+            <div className="card formCard">
+              <div className="eyebrow">ZEIT EINTRAGEN</div>
+              <h2>Neue Zeit speichern</h2>
+              <div className="actions compact">
+                <select
+                  value={newTime.category}
+                  onChange={(e) => {
+                    const nextCategory = e.target.value;
+                    setNewTime((v) => ({ ...v, category: nextCategory, map: '' }));
+                  }}
+                >
+                  <option value="">Kategorie wählen</option>
+                  {categories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
 
-            <input
-              list="map-list-elite-esports"
-              value={newTime.map}
-              onChange={(e) => setNewTime((v) => ({ ...v, map: e.target.value }))}
-              placeholder="Map wählen oder eingeben"
-            />
-            <datalist id="map-list-elite-esports">
-              {mapsForSelectedCategory.map((map) => (
-                <option key={map} value={map} />
-              ))}
-            </datalist>
+                <input
+                  list="map-list-elite-esports"
+                  value={newTime.map}
+                  onChange={(e) => setNewTime((v) => ({ ...v, map: e.target.value }))}
+                  placeholder="Map wählen oder eingeben"
+                />
+                <datalist id="map-list-elite-esports">
+                  {mapsForSelectedCategory.map((map) => (
+                    <option key={map} value={map} />
+                  ))}
+                </datalist>
 
-            <select
-              value={newTime.player}
-              onChange={(e) => setNewTime((v) => ({ ...v, player: e.target.value }))}
-            >
-              <option value="">Spieler wählen</option>
-              {players.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+                <select
+                  value={newTime.player}
+                  onChange={(e) => setNewTime((v) => ({ ...v, player: e.target.value }))}
+                >
+                  <option value="">Spieler wählen</option>
+                  {players.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
 
-            <input
-              value={newTime.time}
-              onChange={(e) => setNewTime((v) => ({ ...v, time: e.target.value }))}
-              placeholder="Zeit z. B. 17.603"
-            />
+                <input
+                  value={newTime.time}
+                  onChange={(e) => setNewTime((v) => ({ ...v, time: e.target.value }))}
+                  placeholder="Zeit z. B. 17.603"
+                />
 
-            <button className="btn primary" onClick={submitTime} disabled={isSaving}>
-              {isSaving ? 'Speichert…' : 'Neue Zeit speichern'}
-            </button>
+                <input
+                  value={newTime.note}
+                  onChange={(e) => setNewTime((v) => ({ ...v, note: e.target.value }))}
+                  placeholder="Notiz optional"
+                />
 
-            <a className="btn ghost" href={SHEET_URL} target="_blank" rel="noreferrer">
-              Google Sheet öffnen
-            </a>
+                <button className="btn primary" onClick={submitTime} disabled={isSaving}>
+                  {isSaving ? 'Speichert…' : 'Neue Zeit speichern'}
+                </button>
+              </div>
+
+              {status ? <div className="info">{status}</div> : null}
+            </div>
+
+            <div className="card formCard">
+              <div className="eyebrow">STRECKE ANLEGEN</div>
+              <h2>Neue Strecke hinzufügen</h2>
+              <div className="actions compact">
+                <input
+                  list="category-list-elite-esports"
+                  value={newTrack.category}
+                  onChange={(e) => setNewTrack((v) => ({ ...v, category: e.target.value }))}
+                  placeholder="Kategorie z. B. 1mpi"
+                />
+                <datalist id="category-list-elite-esports">
+                  {categories.map((category) => (
+                    <option key={category} value={category} />
+                  ))}
+                </datalist>
+
+                <input
+                  value={newTrack.map}
+                  onChange={(e) => setNewTrack((v) => ({ ...v, map: e.target.value }))}
+                  placeholder="Map z. B. 12"
+                />
+
+                <input
+                  value={newTrack.note}
+                  onChange={(e) => setNewTrack((v) => ({ ...v, note: e.target.value }))}
+                  placeholder="Notiz optional"
+                />
+
+                <button className="btn primary" onClick={submitTrack} disabled={isCreatingTrack}>
+                  {isCreatingTrack ? 'Legt an…' : 'Neue Strecke anlegen'}
+                </button>
+
+                <a className="btn ghost" href={SHEET_URL} target="_blank" rel="noreferrer">
+                  Google Sheet öffnen
+                </a>
+              </div>
+
+              {trackStatus ? <div className="info">{trackStatus}</div> : null}
+            </div>
           </div>
-
-          {status ? <div className="info">{status}</div> : null}
 
           <div className="statsTop">
             <div className="stat">
@@ -551,8 +726,8 @@ export default function Page() {
             </div>
             <div className="stat">
               <span>Strecken</span>
-              <strong>{recordsByTrack.length}</strong>
-              <small>mit gültigem WR</small>
+              <strong>{trackOptions.length}</strong>
+              <small>bekannte Tracks gesamt</small>
             </div>
             <div className="stat">
               <span>Top ELO</span>
@@ -563,29 +738,6 @@ export default function Page() {
               <span>Top Fahrer</span>
               <strong>{ranking[0]?.player || '-'}</strong>
               <small>{ranking[0]?.points || 0} Punkte</small>
-            </div>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="eyebrow">NEU</div>
-          <h2>Sauberer Schreibfluss</h2>
-          <div className="legend">
-            <div>
-              <strong>Kategorie + Map getrennt</strong>
-              <span>Keine unsauberen Freitext-Strecken mehr als Pflichtformat.</span>
-            </div>
-            <div>
-              <strong>Validierte Zeiten</strong>
-              <span>Akzeptiert z. B. 17.603 oder 17,603 und normalisiert automatisch.</span>
-            </div>
-            <div>
-              <strong>Bestzeit je Spieler</strong>
-              <span>Für Rankings zählt pro Strecke nur der beste Run eines Spielers.</span>
-            </div>
-            <div>
-              <strong>ELO + Punkte</strong>
-              <span>Competitive-Auswertung bleibt erhalten und wird mit den besten Runs berechnet.</span>
             </div>
           </div>
         </div>
@@ -614,49 +766,13 @@ export default function Page() {
               </div>
 
               <div className="statsList">
-                <div className="statLine">
-                  <span className="label">Punkte</span>
-                  <span className="value">{p.points}</span>
-                  <span className="desc">Gesamtwertung</span>
-                </div>
-
-                <div className="statLine">
-                  <span className="label">ELO</span>
-                  <span className="value">{p.elo}</span>
-                  <span className="desc">Skill Rating</span>
-                </div>
-
-                <div className="statLine">
-                  <span className={`value ${p.eloDelta >= 0 ? 'good' : 'bad'}`}>
-                    {p.eloDelta >= 0 ? `+${p.eloDelta}` : p.eloDelta}
-                  </span>
-                  <span className="label">Δ ELO</span>
-                  <span className="desc">Veränderung</span>
-                </div>
-
-                <div className="statLine">
-                  <span className="value">{p.records}</span>
-                  <span className="label">WRs</span>
-                  <span className="desc">#1 Platzierungen</span>
-                </div>
-
-                <div className="statLine">
-                  <span className="value">{p.podiums}</span>
-                  <span className="label">Podien</span>
-                  <span className="desc">Top 3</span>
-                </div>
-
-                <div className="statLine">
-                  <span className="value">{formatGap(p.avgGap)}</span>
-                  <span className="label">Ø Gap</span>
-                  <span className="desc">Abstand zum WR</span>
-                </div>
-
-                <div className="statLine">
-                  <span className="value">{p.winRate.toFixed(1)}%</span>
-                  <span className="label">Win-Rate</span>
-                  <span className="desc">Wie oft #1</span>
-                </div>
+                <div className="statLine"><span className="label">Punkte</span><span className="value">{p.points}</span><span className="desc">Gesamtwertung</span></div>
+                <div className="statLine"><span className="label">ELO</span><span className="value">{p.elo}</span><span className="desc">Skill Rating</span></div>
+                <div className="statLine"><span className={`value ${p.eloDelta >= 0 ? 'good' : 'bad'}`}>{p.eloDelta >= 0 ? `+${p.eloDelta}` : p.eloDelta}</span><span className="label">Δ ELO</span><span className="desc">Veränderung</span></div>
+                <div className="statLine"><span className="value">{p.records}</span><span className="label">WRs</span><span className="desc">#1 Platzierungen</span></div>
+                <div className="statLine"><span className="value">{p.podiums}</span><span className="label">Podien</span><span className="desc">Top 3</span></div>
+                <div className="statLine"><span className="value">{formatGap(p.avgGap)}</span><span className="label">Ø Gap</span><span className="desc">Abstand zum WR</span></div>
+                <div className="statLine"><span className="value">{p.winRate.toFixed(1)}%</span><span className="label">Win-Rate</span><span className="desc">Wie oft #1</span></div>
               </div>
             </div>
           ))}
@@ -665,73 +781,32 @@ export default function Page() {
 
       <section className="grid">
         <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="eyebrow">WR MAP</div>
-              <h2>Rekorde mit Filter</h2>
-            </div>
-          </div>
-
+          <div className="panel-head"><div><div className="eyebrow">WR MAP</div><h2>Rekorde mit Filter</h2></div></div>
           <div className="filters">
-            <input
-              value={trackSearch}
-              onChange={(e) => setTrackSearch(e.target.value)}
-              placeholder="Strecke suchen…"
-            />
+            <input value={trackSearch} onChange={(e) => setTrackSearch(e.target.value)} placeholder="Strecke suchen…" />
             <select value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)}>
               <option value="">Alle Spieler</option>
-              {players.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
+              {players.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
-
-          <div className="table head four">
-            <span>Strecke</span>
-            <span>WR Fahrer</span>
-            <span>Zeit</span>
-            <span>Kategorie</span>
-          </div>
-
-          {filteredRecords.map((r) =>
-            r ? (
-              <div className="table row four" key={r.track}>
-                <span>{r.track}</span>
-                <span className="playerCell">
-                  <Avatar name={r.player} />
-                  <span>{r.player}</span>
-                </span>
-                <strong>{r.timeText}</strong>
-                <span>{r.category}</span>
-              </div>
-            ) : null
-          )}
+          <div className="table head four"><span>Strecke</span><span>WR Fahrer</span><span>Zeit</span><span>Kategorie</span></div>
+          {filteredRecords.map((r) => r ? (
+            <div className="table row four" key={r.track}>
+              <span>{r.track}</span>
+              <span className="playerCell"><Avatar name={r.player} /><span>{r.player}</span></span>
+              <strong>{r.timeText}</strong>
+              <span>{r.category}</span>
+            </div>
+          ) : null)}
         </div>
 
         <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="eyebrow">LETZTE EINTRÄGE</div>
-              <h2>Zuletzt geladene Runs</h2>
-            </div>
-          </div>
-
-          <div className="table head four">
-            <span>Strecke</span>
-            <span>Spieler</span>
-            <span>Zeit</span>
-            <span>Quelle</span>
-          </div>
-
+          <div className="panel-head"><div><div className="eyebrow">LETZTE EINTRÄGE</div><h2>Zuletzt geladene Runs</h2></div></div>
+          <div className="table head four"><span>Strecke</span><span>Spieler</span><span>Zeit</span><span>Quelle</span></div>
           {recentRuns.map((run) => (
             <div className="table row four" key={run.id}>
               <span>{run.track}</span>
-              <span className="playerCell">
-                <Avatar name={run.player} />
-                <span>{run.player}</span>
-              </span>
+              <span className="playerCell"><Avatar name={run.player} /><span>{run.player}</span></span>
               <strong>{run.timeText}</strong>
               <span>{run.source || '-'}</span>
             </div>
@@ -739,445 +814,59 @@ export default function Page() {
         </div>
       </section>
 
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <div className="eyebrow">PODIUM PRO MAP</div>
-            <h2>Gold · Silber · Bronze</h2>
-          </div>
-        </div>
-
-        <div className="podiums">
-          {podiumByTrack.slice(0, 24).map((p) => (
-            <div className="podiumCard" key={p.track}>
-              <strong>{p.track}</strong>
-              <div className="podiumRow gold">
-                <span>🥇</span>
-                <span>{p.top3[0]?.player || '-'}</span>
-                <strong>{p.top3[0]?.timeText || '-'}</strong>
-              </div>
-              <div className="podiumRow silver">
-                <span>🥈</span>
-                <span>{p.top3[1]?.player || '-'}</span>
-                <strong>{p.top3[1]?.timeText || '-'}</strong>
-              </div>
-              <div className="podiumRow bronze">
-                <span>🥉</span>
-                <span>{p.top3[2]?.player || '-'}</span>
-                <strong>{p.top3[2]?.timeText || '-'}</strong>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <style jsx global>{`
-        :root {
-          color-scheme: dark;
-        }
-
-        * {
-          box-sizing: border-box;
-        }
-
-        html,
-        body {
-          margin: 0;
-          min-height: 100%;
-          font-family: Inter, Arial, sans-serif;
-          background:
-            radial-gradient(circle at top, rgba(26, 80, 255, 0.22), transparent 26%),
-            radial-gradient(circle at right, rgba(0, 224, 255, 0.16), transparent 20%),
-            linear-gradient(180deg, #050816 0%, #07101f 100%);
-          color: #f5f7ff;
-        }
-
-        a {
-          text-decoration: none;
-          color: inherit;
-        }
-
-        button,
-        input,
-        select {
-          font: inherit;
-        }
-
-        .shell {
-          width: min(1500px, calc(100% - 32px));
-          margin: 0 auto;
-          padding: 28px 0 56px;
-        }
-
-        .hero,
-        .panel,
-        .card {
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          background: rgba(10, 15, 32, 0.78);
-          backdrop-filter: blur(16px);
-          box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32);
-          border-radius: 28px;
-        }
-
-        .hero {
-          display: grid;
-          grid-template-columns: 1.15fr 0.85fr;
-          gap: 24px;
-          padding: 28px;
-        }
-
-        .eyebrow {
-          margin: 0 0 8px;
-          color: #75b7ff;
-          font-size: 12px;
-          font-weight: 800;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-        }
-
-        h1 {
-          margin: 0;
-          font-size: clamp(38px, 6vw, 66px);
-          line-height: 0.96;
-          letter-spacing: -0.04em;
-        }
-
-        h2 {
-          margin: 4px 0 0;
-        }
-
-        .sub {
-          color: #c6d0f5;
-          line-height: 1.6;
-        }
-
-        .actions,
-        .filters {
-          display: flex;
-          gap: 12px;
-          flex-wrap: wrap;
-          margin-top: 22px;
-        }
-
-        .actions input,
-        .actions select,
-        .filters input,
-        .filters select {
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          color: white;
-          border-radius: 14px;
-          padding: 14px;
-          outline: none;
-        }
-
-        .btn {
-          border-radius: 14px;
-          padding: 14px 18px;
-          border: 0;
-          cursor: pointer;
-        }
-
-        .btn:disabled {
-          opacity: 0.7;
-          cursor: not-allowed;
-        }
-
-        .primary {
-          background: linear-gradient(135deg, #0077ff, #00d4ff);
-          color: #fff;
-          font-weight: 800;
-        }
-
-        .ghost {
-          background: transparent;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #dbe4ff;
-        }
-
-        .statsTop {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 14px;
-          margin-top: 24px;
-        }
-
-        .stat {
-          padding: 18px;
-          border-radius: 18px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .stat span,
-        .stat small {
-          color: #aeb8d8;
-        }
-
-        .stat strong {
-          display: block;
-          font-size: 30px;
-          margin: 8px 0 4px;
-        }
-
-        .card {
-          padding: 20px;
-        }
-
-        .legend {
-          display: grid;
-          gap: 12px;
-          margin-top: 14px;
-        }
-
-        .legend div {
-          padding: 14px;
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .legend strong {
-          display: block;
-          margin-bottom: 4px;
-        }
-
-        .panel {
-          padding: 22px;
-          margin-top: 20px;
-        }
-
-        .panel-head {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        }
-
-        .rankingCards {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-          gap: 16px;
-          margin-top: 18px;
-        }
-
-        .rankCard {
-          padding: 18px;
-          border-radius: 20px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .rankHeader {
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-          margin-bottom: 14px;
-        }
-
-        .rankNumber {
-          font-size: 28px;
-          font-weight: 900;
-        }
-
-        .playerWrap {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-
-        .playerName {
-          font-size: 22px;
-          font-weight: 800;
-        }
-
-        .playerSub {
-          color: #aeb8d8;
-          font-size: 13px;
-        }
-
-        .statsList {
-          display: grid;
-          gap: 10px;
-        }
-
-        .statLine {
-          display: grid;
-          grid-template-columns: 90px 1fr 1fr;
-          gap: 10px;
-          align-items: center;
-          padding: 12px 14px;
-          border-radius: 14px;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.06);
-        }
-
-        .statLine .label {
-          color: #9fb0df;
-          font-weight: 700;
-        }
-
-        .statLine .value {
-          font-weight: 900;
-          font-size: 20px;
-        }
-
-        .statLine .desc {
-          color: #aeb8d8;
-          font-size: 13px;
-          text-align: right;
-        }
-
-        .table {
-          display: grid;
-          gap: 12px;
-          align-items: center;
-        }
-
-        .table.head {
-          color: #9aa8d1;
-          font-size: 13px;
-          padding: 0 8px;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          margin-top: 14px;
-        }
-
-        .table.row {
-          padding: 14px 12px;
-          margin-top: 10px;
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .four {
-          grid-template-columns: 1.8fr 1fr 1fr 0.8fr;
-        }
-
-        .grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 20px;
-          margin-top: 20px;
-        }
-
-        .playerCell {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-
-        .avatar {
-          width: 38px;
-          height: 38px;
-          border-radius: 50%;
-          object-fit: cover;
-          border: 1px solid rgba(255, 255, 255, 0.16);
-        }
-
-        .avatar.fallback {
-          display: grid;
-          place-items: center;
-          background: linear-gradient(135deg, #1d4dff, #00cfff);
-          font-weight: 900;
-        }
-
-        .podiums {
-          display: grid;
-          gap: 12px;
-          max-height: 960px;
-          overflow: auto;
-        }
-
-        .podiumCard {
-          padding: 14px;
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .podiumRow {
-          display: grid;
-          grid-template-columns: 28px 1fr auto;
-          gap: 10px;
-          padding: 10px 0;
-        }
-
-        .gold {
-          color: #ffd76b;
-        }
-
-        .silver {
-          color: #d4ddf7;
-        }
-
-        .bronze {
-          color: #e0a97a;
-        }
-
-        .info {
-          margin-top: 14px;
-          padding: 12px 14px;
-          border-radius: 14px;
-          background: rgba(0, 212, 120, 0.12);
-          border: 1px solid rgba(0, 212, 120, 0.2);
-          color: #b8ffd8;
-        }
-
-        .good {
-          color: #8df2c7;
-        }
-
-        .bad {
-          color: #ff9f9f;
-        }
-
-        @media (max-width: 1180px) {
-          .hero,
-          .grid,
-          .statsTop {
-            grid-template-columns: 1fr;
-          }
-        }
-
-        @media (max-width: 900px) {
-          .table.head {
-            display: none;
-          }
-
-          .table.row,
-          .four {
-            grid-template-columns: 1fr;
-            gap: 8px;
-          }
-
-          .statLine {
-            grid-template-columns: 1fr;
-            text-align: left;
-          }
-
-          .statLine .desc {
-            text-align: left;
-          }
-        }
-
-        @media (max-width: 780px) {
-          .shell {
-            width: min(100% - 18px, 100%);
-            padding-top: 18px;
-          }
-
-          .hero,
-          .panel,
-          .card {
-            padding: 18px;
-            border-radius: 22px;
-          }
-
-          h1 {
-            font-size: 42px;
-          }
-        }
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; min-height: 100%; font-family: Inter, Arial, sans-serif; background: radial-gradient(circle at top, rgba(26, 80, 255, 0.22), transparent 26%), radial-gradient(circle at right, rgba(0, 224, 255, 0.16), transparent 20%), linear-gradient(180deg, #050816 0%, #07101f 100%); color: #f5f7ff; }
+        a { text-decoration: none; color: inherit; }
+        button, input, select { font: inherit; }
+        .shell { width: min(1500px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+        .hero, .panel, .card { border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(10, 15, 32, 0.78); backdrop-filter: blur(16px); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32); border-radius: 28px; }
+        .hero { display: grid; grid-template-columns: 1fr; gap: 24px; padding: 28px; }
+        .dualForms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 22px; }
+        .formCard { padding: 20px; }
+        .eyebrow { margin: 0 0 8px; color: #75b7ff; font-size: 12px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; }
+        h1 { margin: 0; font-size: clamp(38px, 6vw, 66px); line-height: 0.96; letter-spacing: -0.04em; }
+        h2 { margin: 4px 0 0; }
+        .sub { color: #c6d0f5; line-height: 1.6; }
+        .actions, .filters { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
+        .actions.compact { margin-top: 16px; }
+        .actions input, .actions select, .filters input, .filters select { background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: white; border-radius: 14px; padding: 14px; outline: none; min-width: 190px; flex: 1 1 220px; }
+        .btn { border-radius: 14px; padding: 14px 18px; border: 0; cursor: pointer; }
+        .btn:disabled { opacity: 0.7; cursor: not-allowed; }
+        .primary { background: linear-gradient(135deg, #0077ff, #00d4ff); color: #fff; font-weight: 800; }
+        .ghost { background: transparent; border: 1px solid rgba(255, 255, 255, 0.12); color: #dbe4ff; }
+        .statsTop { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
+        .stat { padding: 18px; border-radius: 18px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .stat span, .stat small { color: #aeb8d8; }
+        .stat strong { display: block; font-size: 30px; margin: 8px 0 4px; }
+        .panel { padding: 22px; margin-top: 20px; }
+        .panel-head { display: flex; justify-content: space-between; align-items: center; }
+        .rankingCards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 18px; }
+        .rankCard { padding: 18px; border-radius: 20px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .rankHeader { display: flex; flex-direction: column; gap: 14px; margin-bottom: 14px; }
+        .rankNumber { font-size: 28px; font-weight: 900; }
+        .playerWrap, .playerCell { display: flex; align-items: center; gap: 12px; }
+        .playerName { font-size: 22px; font-weight: 800; }
+        .playerSub { color: #aeb8d8; font-size: 13px; }
+        .statsList { display: grid; gap: 10px; }
+        .statLine { display: grid; grid-template-columns: 90px 1fr 1fr; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06); }
+        .statLine .label { color: #9fb0df; font-weight: 700; }
+        .statLine .value { font-weight: 900; font-size: 20px; }
+        .statLine .desc { color: #aeb8d8; font-size: 13px; text-align: right; }
+        .table { display: grid; gap: 12px; align-items: center; }
+        .table.head { color: #9aa8d1; font-size: 13px; padding: 0 8px; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 14px; }
+        .table.row { padding: 14px 12px; margin-top: 10px; border-radius: 16px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .four { grid-template-columns: 1.8fr 1fr 1fr 0.8fr; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+        .avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; border: 1px solid rgba(255, 255, 255, 0.16); }
+        .avatar.fallback { display: grid; place-items: center; background: linear-gradient(135deg, #1d4dff, #00cfff); font-weight: 900; }
+        .info { margin-top: 14px; padding: 12px 14px; border-radius: 14px; background: rgba(0, 212, 120, 0.12); border: 1px solid rgba(0, 212, 120, 0.2); color: #b8ffd8; }
+        .good { color: #8df2c7; }
+        .bad { color: #ff9f9f; }
+        @media (max-width: 1180px) { .grid, .statsTop, .dualForms { grid-template-columns: 1fr; } }
+        @media (max-width: 900px) { .table.head { display: none; } .table.row, .four { grid-template-columns: 1fr; gap: 8px; } .statLine { grid-template-columns: 1fr; text-align: left; } .statLine .desc { text-align: left; } }
+        @media (max-width: 780px) { .shell { width: min(100% - 18px, 100%); padding-top: 18px; } .hero, .panel, .card { padding: 18px; border-radius: 22px; } h1 { font-size: 42px; } }
       `}</style>
     </main>
   );
