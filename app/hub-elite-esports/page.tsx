@@ -39,6 +39,20 @@ type RankingRow = {
   eloDelta: number;
 };
 
+type TrackOption = {
+  category: string;
+  map: string;
+  track: string;
+};
+
+type SubmitState = {
+  player: string;
+  category: string;
+  map: string;
+  time: string;
+  note: string;
+};
+
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -99,6 +113,17 @@ function parseNumber(value: string): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
+function normalizeTimeInput(value: string): string {
+  const normalized = value.trim().replace(',', '.');
+  const n = parseNumber(normalized);
+
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error('Bitte eine gültige Zeit eingeben, z. B. 17.603');
+  }
+
+  return normalized;
+}
+
 function toMs(value: string): number {
   const v = (value || '').trim().replace(',', '.');
   if (!v) return Number.POSITIVE_INFINITY;
@@ -133,6 +158,14 @@ function initials(name: string) {
     .toUpperCase();
 }
 
+function buildTrack(category: string, map: string) {
+  return `${category} #${map}`;
+}
+
+function buildKey(category: string, map: string, player: string) {
+  return `${category.trim()}|${map.trim()}|${player.trim()}`;
+}
+
 function Avatar({ name }: { name: string }) {
   const url = AVATARS[name];
   if (url) return <img src={url} alt={name} className="avatar" />;
@@ -160,10 +193,10 @@ function parseRunsFromCsv(csv: string): Run[] {
       const source = (sourceIdx >= 0 ? row[sourceIdx] : '').trim();
 
       return {
-        id: `${i}-${category}-${map}-${player}`,
+        id: `${i}-${category}-${map}-${player}-${timeText}`,
         category,
         map,
-        track: `${category} #${map}`,
+        track: buildTrack(category, map),
         player,
         timeText,
         timeMs: toMs(timeText),
@@ -175,7 +208,8 @@ function parseRunsFromCsv(csv: string): Run[] {
         !!run.category &&
         !!run.map &&
         !!run.player &&
-        Number.isFinite(parseNumber(run.timeText))
+        Number.isFinite(run.timeMs) &&
+        run.timeMs < Number.POSITIVE_INFINITY
     );
 }
 
@@ -184,9 +218,11 @@ export default function Page() {
   const [trackSearch, setTrackSearch] = useState('');
   const [playerFilter, setPlayerFilter] = useState('');
   const [status, setStatus] = useState('');
-  const [newTime, setNewTime] = useState({
+  const [isSaving, setIsSaving] = useState(false);
+  const [newTime, setNewTime] = useState<SubmitState>({
     player: '',
-    track: '',
+    category: '',
+    map: '',
     time: '',
     note: '',
   });
@@ -198,12 +234,17 @@ export default function Page() {
     setRuns(parsed);
 
     if (!newTime.player && parsed[0]) {
-      setNewTime((v) => ({ ...v, player: parsed[0].player }));
+      setNewTime((v) => ({
+        ...v,
+        player: parsed[0].player,
+        category: v.category || parsed[0].category,
+      }));
     }
   };
 
   useEffect(() => {
     loadRuns();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const players = useMemo(
@@ -211,15 +252,48 @@ export default function Page() {
     [runs]
   );
 
-  const tracks = useMemo(
-    () => Array.from(new Set(runs.map((r) => r.track))).sort((a, b) => a.localeCompare(b)),
+  const trackOptions = useMemo<TrackOption[]>(
+    () =>
+      Array.from(
+        new Map(
+          runs.map((r) => [buildTrack(r.category, r.map), { category: r.category, map: r.map, track: buildTrack(r.category, r.map) }])
+        ).values()
+      ).sort((a, b) => a.track.localeCompare(b.track)),
     [runs]
   );
+
+  const categories = useMemo(
+    () => Array.from(new Set(trackOptions.map((t) => t.category))).sort((a, b) => a.localeCompare(b)),
+    [trackOptions]
+  );
+
+  const mapsForSelectedCategory = useMemo(
+    () =>
+      trackOptions
+        .filter((t) => !newTime.category || t.category === newTime.category)
+        .map((t) => t.map),
+    [trackOptions, newTime.category]
+  );
+
+  const bestRuns = useMemo(() => {
+    const best = new Map<string, Run>();
+
+    for (const run of runs) {
+      const key = `${run.category}|${run.map}|${run.player}`;
+      const current = best.get(key);
+
+      if (!current || run.timeMs < current.timeMs) {
+        best.set(key, run);
+      }
+    }
+
+    return Array.from(best.values());
+  }, [runs]);
 
   const groupedByTrack = useMemo(() => {
     const map = new Map<string, Run[]>();
 
-    for (const run of runs) {
+    for (const run of bestRuns) {
       const arr = map.get(run.track) || [];
       arr.push(run);
       map.set(run.track, arr);
@@ -231,7 +305,7 @@ export default function Page() {
     }
 
     return map;
-  }, [runs]);
+  }, [bestRuns]);
 
   const podiumByTrack = useMemo(
     () =>
@@ -350,26 +424,55 @@ export default function Page() {
     [ranking]
   );
 
+  const recentRuns = useMemo(
+    () => [...runs].sort((a, b) => b.id.localeCompare(a.id)).slice(0, 12),
+    [runs]
+  );
+
   const submitTime = async () => {
-    if (!newTime.player || !newTime.track || !newTime.time) {
-      return setStatus('Bitte Spieler, Strecke und Zeit ausfüllen.');
+    try {
+      if (!newTime.player || !newTime.category || !newTime.map || !newTime.time) {
+        setStatus('Bitte Spieler, Kategorie, Map und Zeit ausfüllen.');
+        return;
+      }
+
+      const normalizedTime = normalizeTimeInput(newTime.time);
+      const track = buildTrack(newTime.category, newTime.map);
+
+      setIsSaving(true);
+      setStatus('Speichere Zeit…');
+
+      const payload = {
+        player: newTime.player.trim(),
+        category: newTime.category.trim(),
+        map: newTime.map.trim(),
+        track,
+        time: normalizedTime,
+        key: buildKey(newTime.category, newTime.map, newTime.player),
+        source: 'WebApp',
+        note: newTime.note.trim(),
+      };
+
+      const res = await fetch(WRITE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'time', payload }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || 'Speichern fehlgeschlagen.');
+      }
+
+      setStatus('Gespeichert. Daten werden neu geladen…');
+      setNewTime((v) => ({ ...v, map: '', time: '', note: '' }));
+      setTimeout(() => loadRuns(), 900);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Speichern fehlgeschlagen.');
+    } finally {
+      setIsSaving(false);
     }
-
-    const res = await fetch(WRITE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ type: 'time', payload: newTime }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok || data.ok === false) {
-      return setStatus('Speichern fehlgeschlagen.');
-    }
-
-    setStatus('Gespeichert. Daten werden neu geladen…');
-    setNewTime((v) => ({ ...v, track: '', time: '', note: '' }));
-    setTimeout(() => loadRuns(), 900);
   };
 
   return (
@@ -377,22 +480,37 @@ export default function Page() {
       <section className="hero">
         <div>
           <div className="eyebrow">TRACKMANIA ELITE E-SPORTS</div>
-          <h1>Gleiche Basis, jetzt mit Skill-Layer</h1>
+          <h1>Neue Zeiten sauber eintragen</h1>
           <p className="sub">
-            Basierend auf dem guten Stand von <strong>hub-elite</strong>, jetzt mit ELO und
-            stärkeren Competitive-Signalen.
+            Die Seite liest aus <strong>Stammdaten_Pro</strong> und schreibt neue Einträge jetzt
+            strukturiert mit <strong>Kategorie + Map + Spieler + Zeit</strong> zurück.
           </p>
 
           <div className="actions">
+            <select
+              value={newTime.category}
+              onChange={(e) => {
+                const nextCategory = e.target.value;
+                setNewTime((v) => ({ ...v, category: nextCategory, map: '' }));
+              }}
+            >
+              <option value="">Kategorie wählen</option>
+              {categories.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+
             <input
-              list="track-list-elite-esports"
-              value={newTime.track}
-              onChange={(e) => setNewTime((v) => ({ ...v, track: e.target.value }))}
-              placeholder="Strecke wählen oder neue eingeben"
+              list="map-list-elite-esports"
+              value={newTime.map}
+              onChange={(e) => setNewTime((v) => ({ ...v, map: e.target.value }))}
+              placeholder="Map wählen oder eingeben"
             />
-            <datalist id="track-list-elite-esports">
-              {tracks.map((t) => (
-                <option key={t} value={t} />
+            <datalist id="map-list-elite-esports">
+              {mapsForSelectedCategory.map((map) => (
+                <option key={map} value={map} />
               ))}
             </datalist>
 
@@ -411,11 +529,11 @@ export default function Page() {
             <input
               value={newTime.time}
               onChange={(e) => setNewTime((v) => ({ ...v, time: e.target.value }))}
-              placeholder="Zeit z. B. 17,603"
+              placeholder="Zeit z. B. 17.603"
             />
 
-            <button className="btn primary" onClick={submitTime}>
-              Neue Zeit speichern
+            <button className="btn primary" onClick={submitTime} disabled={isSaving}>
+              {isSaving ? 'Speichert…' : 'Neue Zeit speichern'}
             </button>
 
             <a className="btn ghost" href={SHEET_URL} target="_blank" rel="noreferrer">
@@ -450,36 +568,24 @@ export default function Page() {
         </div>
 
         <div className="card">
-          <div className="eyebrow">NEU DAZU</div>
-          <h2>Was die Werte bedeuten</h2>
+          <div className="eyebrow">NEU</div>
+          <h2>Sauberer Schreibfluss</h2>
           <div className="legend">
             <div>
-              <strong>Punkte</strong>
-              <span>Gesamtwertung aus allen Platzierungen pro Strecke</span>
+              <strong>Kategorie + Map getrennt</strong>
+              <span>Keine unsauberen Freitext-Strecken mehr als Pflichtformat.</span>
             </div>
             <div>
-              <strong>ELO</strong>
-              <span>Skill-Rating aus direkten Zeitvergleichen auf gemeinsamen Maps</span>
+              <strong>Validierte Zeiten</strong>
+              <span>Akzeptiert z. B. 17.603 oder 17,603 und normalisiert automatisch.</span>
             </div>
             <div>
-              <strong>Δ ELO</strong>
-              <span>Wie stark der Spieler im aktuellen Datensatz zugelegt oder verloren hat</span>
+              <strong>Bestzeit je Spieler</strong>
+              <span>Für Rankings zählt pro Strecke nur der beste Run eines Spielers.</span>
             </div>
             <div>
-              <strong>WRs</strong>
-              <span>Anzahl der Strecken, auf denen der Spieler Platz 1 ist</span>
-            </div>
-            <div>
-              <strong>Podien</strong>
-              <span>Anzahl der Top-3 Platzierungen</span>
-            </div>
-            <div>
-              <strong>Ø Gap</strong>
-              <span>Durchschnittlicher Abstand zur Bestzeit</span>
-            </div>
-            <div>
-              <strong>Win-Rate</strong>
-              <span>Wie oft ein Fahrer bei gespielten Strecken #1 wurde</span>
+              <strong>ELO + Punkte</strong>
+              <span>Competitive-Auswertung bleibt erhalten und wird mit den besten Runs berechnet.</span>
             </div>
           </div>
         </div>
@@ -607,29 +713,27 @@ export default function Page() {
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="eyebrow">ELO MOVERS</div>
-              <h2>Wer verbessert sich am meisten?</h2>
+              <div className="eyebrow">LETZTE EINTRÄGE</div>
+              <h2>Zuletzt geladene Runs</h2>
             </div>
           </div>
 
           <div className="table head four">
+            <span>Strecke</span>
             <span>Spieler</span>
-            <span>ELO</span>
-            <span>Δ</span>
-            <span>Status</span>
+            <span>Zeit</span>
+            <span>Quelle</span>
           </div>
 
-          {topMovers.map((m) => (
-            <div className="table row four" key={m.player}>
+          {recentRuns.map((run) => (
+            <div className="table row four" key={run.id}>
+              <span>{run.track}</span>
               <span className="playerCell">
-                <Avatar name={m.player} />
-                <span>{m.player}</span>
+                <Avatar name={run.player} />
+                <span>{run.player}</span>
               </span>
-              <strong>{m.elo}</strong>
-              <span className={m.eloDelta >= 0 ? 'good' : 'bad'}>
-                {m.eloDelta >= 0 ? `+${m.eloDelta}` : m.eloDelta}
-              </span>
-              <span>{m.eloDelta >= 0 ? 'Aufwind' : 'Under Pressure'}</span>
+              <strong>{run.timeText}</strong>
+              <span>{run.source || '-'}</span>
             </div>
           ))}
         </div>
@@ -772,6 +876,11 @@ export default function Page() {
           padding: 14px 18px;
           border: 0;
           cursor: pointer;
+        }
+
+        .btn:disabled {
+          opacity: 0.7;
+          cursor: not-allowed;
         }
 
         .primary {
