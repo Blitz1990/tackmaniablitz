@@ -1,8 +1,20 @@
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyhOps49-_YQTKIFAQ49qKGDafcW1v-XkvrkAk6te9q7U6NewGM8Bud_F5adVxxRiYhSw/exec';
+const APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbyhOps49-_YQTKIFAQ49qKGDafcW1v-XkvrkAk6te9q7U6NewGM8Bud_F5adVxxRiYhSw/exec';
+
+async function parseRequestBody(request: Request) {
+  const contentType = request.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    return request.json();
+  }
+
+  const raw = await request.text();
+  return raw ? JSON.parse(raw) : {};
+}
 
 export async function POST(request: Request) {
   try {
-    const json = await request.json();
+    const json = await parseRequestBody(request);
 
     const response = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
@@ -10,6 +22,7 @@ export async function POST(request: Request) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(json),
+      cache: 'no-store',
     });
 
     const text = await response.text();
@@ -18,12 +31,16 @@ export async function POST(request: Request) {
       status: response.ok ? 200 : response.status,
       headers: {
         'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
       },
     });
   } catch (error) {
-    return new Response(
-      JSON.stringify({ ok: false, error: String(error) }),
-      { status: 500 }
-    );
+    return new Response(JSON.stringify({ ok: false, error: String(error) }), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      },
+    });
   }
 }
