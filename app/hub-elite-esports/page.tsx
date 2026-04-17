@@ -7,6 +7,8 @@ const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit?usp=s
 const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Stammdaten_Pro`;
 const WRITE_URL = '/api/write';
 const LOCAL_TRACKS_KEY = 'trackmania-custom-tracks-v1';
+const DEFAULT_PLAYERS = ['Marc', 'Oli', 'Schaller', 'Nico', 'Manu', 'test'];
+const DEFAULT_CATEGORIES = ['1mpi', '2mpi', '3mpi', '4mpi'];
 
 const AVATARS: Record<string, string> = {
   Marc: '',
@@ -279,16 +281,22 @@ export default function Page() {
   });
 
   const loadRuns = async () => {
-    const res = await fetch(CSV_URL, { cache: 'no-store' });
-    const txt = await res.text();
-    const parsed = parseRunsFromCsv(txt);
-    setRuns(parsed);
+    try {
+      const res = await fetch(CSV_URL, { cache: 'no-store' });
+      const txt = await res.text();
+      const parsed = parseRunsFromCsv(txt);
+      setRuns(parsed);
 
-    if (!newTime.player && parsed[0]) {
       setNewTime((v) => ({
         ...v,
-        player: parsed[0].player,
-        category: v.category || parsed[0].category,
+        player: v.player || parsed[0]?.player || DEFAULT_PLAYERS[0],
+        category: v.category || parsed[0]?.category || DEFAULT_CATEGORIES[0],
+      }));
+    } catch {
+      setNewTime((v) => ({
+        ...v,
+        player: v.player || DEFAULT_PLAYERS[0],
+        category: v.category || DEFAULT_CATEGORIES[0],
       }));
     }
   };
@@ -299,10 +307,10 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const players = useMemo(
-    () => Array.from(new Set(runs.map((r) => r.player))).sort((a, b) => a.localeCompare(b)),
-    [runs]
-  );
+  const players = useMemo(() => {
+    const values = new Set([...DEFAULT_PLAYERS, ...runs.map((r) => r.player).filter(Boolean)]);
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [runs]);
 
   const trackOptions = useMemo<TrackOption[]>(() => {
     const combined = new Map<string, TrackOption>();
@@ -325,10 +333,10 @@ export default function Page() {
     return Array.from(combined.values()).sort((a, b) => a.track.localeCompare(b.track));
   }, [runs, localTracks]);
 
-  const categories = useMemo(
-    () => Array.from(new Set(trackOptions.map((t) => t.category))).sort((a, b) => a.localeCompare(b)),
-    [trackOptions]
-  );
+  const categories = useMemo(() => {
+    const values = new Set([...DEFAULT_CATEGORIES, ...trackOptions.map((t) => t.category).filter(Boolean)]);
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [trackOptions]);
 
   const mapsForSelectedCategory = useMemo(
     () =>
@@ -610,7 +618,7 @@ export default function Page() {
           <div className="eyebrow">TRACKMANIA ELITE E-SPORTS</div>
           <h1>Neue Zeiten und Strecken direkt auf der Seite</h1>
           <p className="sub">
-            Du kannst jetzt neue Zeiten speichern und neue Strecken anlegen. Neue Strecken sind sofort auswählbar; zusätzlich wird versucht, sie an den bestehenden Schreib-Endpoint zu senden.
+            Kategorie, Spieler und Strecke funktionieren jetzt robust mit Vorschlagslisten und Fallback-Werten. Auch wenn das Sheet mal unvollständig lädt, kannst du weiterarbeiten.
           </p>
 
           <div className="dualForms">
@@ -618,26 +626,23 @@ export default function Page() {
               <div className="eyebrow">ZEIT EINTRAGEN</div>
               <h2>Neue Zeit speichern</h2>
               <div className="actions compact">
-                <select
+                <input
+                  list="category-list-time"
                   value={newTime.category}
-                  onChange={(e) => {
-                    const nextCategory = e.target.value;
-                    setNewTime((v) => ({ ...v, category: nextCategory, map: '' }));
-                  }}
-                >
-                  <option value="">Kategorie wählen</option>
+                  onChange={(e) => setNewTime((v) => ({ ...v, category: e.target.value, map: '' }))}
+                  placeholder="Kategorie wählen oder eingeben"
+                />
+                <datalist id="category-list-time">
                   {categories.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
+                    <option key={category} value={category} />
                   ))}
-                </select>
+                </datalist>
 
                 <input
                   list="map-list-elite-esports"
                   value={newTime.map}
                   onChange={(e) => setNewTime((v) => ({ ...v, map: e.target.value }))}
-                  placeholder="Map wählen oder eingeben"
+                  placeholder="Strecke / Map wählen oder eingeben"
                 />
                 <datalist id="map-list-elite-esports">
                   {mapsForSelectedCategory.map((map) => (
@@ -645,17 +650,17 @@ export default function Page() {
                   ))}
                 </datalist>
 
-                <select
+                <input
+                  list="player-list-time"
                   value={newTime.player}
                   onChange={(e) => setNewTime((v) => ({ ...v, player: e.target.value }))}
-                >
-                  <option value="">Spieler wählen</option>
-                  {players.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
+                  placeholder="Spieler wählen oder eingeben"
+                />
+                <datalist id="player-list-time">
+                  {players.map((player) => (
+                    <option key={player} value={player} />
                   ))}
-                </select>
+                </datalist>
 
                 <input
                   value={newTime.time}
@@ -682,12 +687,12 @@ export default function Page() {
               <h2>Neue Strecke hinzufügen</h2>
               <div className="actions compact">
                 <input
-                  list="category-list-elite-esports"
+                  list="category-list-track"
                   value={newTrack.category}
                   onChange={(e) => setNewTrack((v) => ({ ...v, category: e.target.value }))}
                   placeholder="Kategorie z. B. 1mpi"
                 />
-                <datalist id="category-list-elite-esports">
+                <datalist id="category-list-track">
                   {categories.map((category) => (
                     <option key={category} value={category} />
                   ))}
@@ -719,52 +724,23 @@ export default function Page() {
           </div>
 
           <div className="statsTop">
-            <div className="stat">
-              <span>Spieler</span>
-              <strong>{players.length}</strong>
-              <small>aktive Fahrer</small>
-            </div>
-            <div className="stat">
-              <span>Strecken</span>
-              <strong>{trackOptions.length}</strong>
-              <small>bekannte Tracks gesamt</small>
-            </div>
-            <div className="stat">
-              <span>Top ELO</span>
-              <strong>{ranking[0]?.elo || 1000}</strong>
-              <small>{ranking[0]?.player || '-'}</small>
-            </div>
-            <div className="stat">
-              <span>Top Fahrer</span>
-              <strong>{ranking[0]?.player || '-'}</strong>
-              <small>{ranking[0]?.points || 0} Punkte</small>
-            </div>
+            <div className="stat"><span>Spieler</span><strong>{players.length}</strong><small>aktive Fahrer</small></div>
+            <div className="stat"><span>Strecken</span><strong>{trackOptions.length}</strong><small>bekannte Tracks gesamt</small></div>
+            <div className="stat"><span>Top ELO</span><strong>{ranking[0]?.elo || 1000}</strong><small>{ranking[0]?.player || '-'}</small></div>
+            <div className="stat"><span>Top Fahrer</span><strong>{ranking[0]?.player || '-'}</strong><small>{ranking[0]?.points || 0} Punkte</small></div>
           </div>
         </div>
       </section>
 
       <section className="panel">
-        <div className="panel-head">
-          <div>
-            <div className="eyebrow">GLOBAL RANKING + ELO</div>
-            <h2>Punktesystem pro Strecke</h2>
-          </div>
-        </div>
-
+        <div className="panel-head"><div><div className="eyebrow">GLOBAL RANKING + ELO</div><h2>Punktesystem pro Strecke</h2></div></div>
         <div className="rankingCards">
           {ranking.map((p, index) => (
             <div className="rankCard" key={p.player}>
               <div className="rankHeader">
                 <div className="rankNumber">#{index + 1}</div>
-                <div className="playerWrap">
-                  <Avatar name={p.player} />
-                  <div>
-                    <div className="playerName">{p.player}</div>
-                    <div className="playerSub">Competitive Overview</div>
-                  </div>
-                </div>
+                <div className="playerWrap"><Avatar name={p.player} /><div><div className="playerName">{p.player}</div><div className="playerSub">Competitive Overview</div></div></div>
               </div>
-
               <div className="statsList">
                 <div className="statLine"><span className="label">Punkte</span><span className="value">{p.points}</span><span className="desc">Gesamtwertung</span></div>
                 <div className="statLine"><span className="label">ELO</span><span className="value">{p.elo}</span><span className="desc">Skill Rating</span></div>
@@ -784,10 +760,10 @@ export default function Page() {
           <div className="panel-head"><div><div className="eyebrow">WR MAP</div><h2>Rekorde mit Filter</h2></div></div>
           <div className="filters">
             <input value={trackSearch} onChange={(e) => setTrackSearch(e.target.value)} placeholder="Strecke suchen…" />
-            <select value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)}>
-              <option value="">Alle Spieler</option>
-              {players.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
+            <input list="player-filter-list" value={playerFilter} onChange={(e) => setPlayerFilter(e.target.value)} placeholder="Spieler filtern" />
+            <datalist id="player-filter-list">
+              {players.map((player) => <option key={player} value={player} />)}
+            </datalist>
           </div>
           <div className="table head four"><span>Strecke</span><span>WR Fahrer</span><span>Zeit</span><span>Kategorie</span></div>
           {filteredRecords.map((r) => r ? (
@@ -819,7 +795,7 @@ export default function Page() {
         * { box-sizing: border-box; }
         html, body { margin: 0; min-height: 100%; font-family: Inter, Arial, sans-serif; background: radial-gradient(circle at top, rgba(26, 80, 255, 0.22), transparent 26%), radial-gradient(circle at right, rgba(0, 224, 255, 0.16), transparent 20%), linear-gradient(180deg, #050816 0%, #07101f 100%); color: #f5f7ff; }
         a { text-decoration: none; color: inherit; }
-        button, input, select { font: inherit; }
+        button, input { font: inherit; }
         .shell { width: min(1500px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
         .hero, .panel, .card { border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(10, 15, 32, 0.78); backdrop-filter: blur(16px); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32); border-radius: 28px; }
         .hero { display: grid; grid-template-columns: 1fr; gap: 24px; padding: 28px; }
@@ -831,7 +807,7 @@ export default function Page() {
         .sub { color: #c6d0f5; line-height: 1.6; }
         .actions, .filters { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
         .actions.compact { margin-top: 16px; }
-        .actions input, .actions select, .filters input, .filters select { background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: white; border-radius: 14px; padding: 14px; outline: none; min-width: 190px; flex: 1 1 220px; }
+        .actions input, .filters input { background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: white; border-radius: 14px; padding: 14px; outline: none; min-width: 190px; flex: 1 1 220px; }
         .btn { border-radius: 14px; padding: 14px 18px; border: 0; cursor: pointer; }
         .btn:disabled { opacity: 0.7; cursor: not-allowed; }
         .primary { background: linear-gradient(135deg, #0077ff, #00d4ff); color: #fff; font-weight: 800; }
